@@ -85,6 +85,16 @@ bool SDCardManager::begin() {
 
 FsBlockDeviceInterface* SDCardManager::rawBlockDevice() { return _dev; }
 
+void SDCardManager::prepareForSleep() {
+  if (!initialized) return;
+  _vol.end();  // flush the FAT/directory cache, then drop the mount
+  if (_dev) _dev->end();
+  initialized = false;
+  cachedTotalBytes = 0;
+  cachedUsedBytes = 0;
+  cachedUsedBytesValid = false;
+}
+
 FsBlockDeviceInterface* SDCardManager::detachFilesystemForRawAccess() {
   if (!initialized || !_dev) return nullptr;
   if (!syncFilesystem()) return nullptr;
@@ -203,6 +213,12 @@ bool SDCardManager::begin() {
     digitalWrite(BoardConfig::ACTIVE.display.cs, HIGH);
   }
 
+  // The sleep path latches CS deasserted on boards with no SD rail, and the hold
+  // survives the deep-sleep wake reset. Release it before SdFat claims the pin,
+  // or CS is stuck HIGH and the card is never selected -- mount fails on every
+  // boot that follows a sleep.
+  gpio_hold_dis(static_cast<gpio_num_t>(SD_CS));
+
   // A board with a dedicated SD SPI bus (separateSpi) MUST NOT reconfigure the
   // global SPI object: that bus belongs to the display, and Arduino's second
   // SPI.begin() won't remap its pins, so the panel would end up transmitting on
@@ -246,6 +262,15 @@ bool SDCardManager::begin() {
   }
 
   return initialized;
+}
+
+void SDCardManager::prepareForSleep() {
+  if (!initialized) return;
+  sd.end();  // FsVolume::end() (flush FAT/dir cache) + card session end
+  initialized = false;
+  cachedTotalBytes = 0;
+  cachedUsedBytes = 0;
+  cachedUsedBytesValid = false;
 }
 
 // SdFat's card object already IS a block device: with USE_BLOCK_DEVICE_INTERFACE
