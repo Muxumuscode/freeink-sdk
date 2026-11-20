@@ -1456,6 +1456,9 @@ uint8_t InputManager::serviceTouch() {
     resetMultiTouchGesture();
   }
 
+  const bool afterBlindGap = lastTouchServiceAt != 0 && now - lastTouchServiceAt > TOUCH_BLIND_GAP_MS;
+  lastTouchServiceAt = now;
+
   switch (t.controller) {
 #if FREEINK_TOUCH_CST816S
     case BoardConfig::TouchController::Cst816s:
@@ -1496,6 +1499,15 @@ uint8_t InputManager::serviceTouch() {
 #endif
     default:
       break;  // driver compiled out: beginTouch() reported it and left touch disabled
+  }
+
+  // A contact first seen right after a blind window (the loop was blocked) was
+  // not watched from its touch-down: the finger may have been mid-swipe, and the
+  // short tail left would read as a tap on whatever row it ended over. Never a
+  // tap or long-press; a swipe still counts.
+  if (touchPressedEvent && afterBlindGap) {
+    touchMovedBeyondTapSlop = true;
+    touchMovedBeyondTapReleaseSlop = true;
   }
 
   // Long-press classification, beside the tap/swipe machinery it shares state
