@@ -18,6 +18,18 @@ namespace {
 int8_t powerPin() { return BoardConfig::ACTIVE.input.power; }
 bool powerActiveHigh() { return BoardConfig::ACTIVE.input.powerActiveHigh; }
 
+// Records a deepSleep() abort (see deepSleep()) across the esp_restart() that
+// follows it, so the next boot can report it via takeAbortedSleepInfo().
+// RTC_NOINIT_ATTR survives esp_restart() (a warm reset, same RTC-memory domain)
+// but is garbage on a cold boot -- magic-guarded like main.cpp's silentRebootMagic.
+constexpr uint32_t ABORTED_SLEEP_MAGIC = 0x41424f52;  // 'ABOR'
+
+struct AbortedSleepRecord {
+  bool aborted;
+  int wakeupCause;
+  int wakePinLevel;
+};
+
 PowerManager::SleepParkHook s_parkHook = nullptr;
 
 // Consumed by the next deep sleep; see armDebugTimerWake(). Plain RAM, so it
@@ -55,6 +67,9 @@ void ensureCounters() {
   s_flags = 0;
 }
 }  // namespace
+
+RTC_NOINIT_ATTR uint32_t abortedSleepMagic;
+RTC_NOINIT_ATTR AbortedSleepRecord abortedSleepRecord;
 
 void PowerManager::setSleepParkHook(const SleepParkHook hook) { s_parkHook = hook; }
 
@@ -368,6 +383,21 @@ bool PowerManager::wokeFromStuckRetry() {
   ensureCounters();
   if ((s_flags & FLAG_STUCK_TIMER) == 0) return false;
   return esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER;
+}
+
+PowerManager::AbortedSleepInfo PowerManager::takeAbortedSleepInfo() {
+  AbortedSleepInfo info;
+  if (abortedSleepMagic == ABORTED_SLEEP_MAGIC && abortedSleepRecord.aborted) {
+    info.aborted = true;
+    info.wakeupCause = abortedSleepRecord.wakeupCause;
+    info.wakePinLevel = abortedSleepRecord.wakePinLevel;
+  }
+  // Clear so a stale record doesn't get reported again on a later boot, and
+  // re-stamp the magic so an uninitialized cold-boot read still reports false
+  // rather than following a garbage `aborted` bit.
+  abortedSleepRecord.aborted = false;
+  abortedSleepMagic = ABORTED_SLEEP_MAGIC;
+  return info;
 }
 
 }  // namespace freeink
