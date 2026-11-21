@@ -111,9 +111,29 @@ public:
 
     // Cuts the battery off from the system through the charger IC's BATFET
     // (ship mode) — a full power-off the MCU cannot undo; what turns the device
-    // back on is up to the charger. SGM41562 only (REG06 bit 5). Returns false
+    // back on is up to the charger. SGM41562 (REG06 bit 5) and BQ25896 (REG09
+    // bit 5, no delay; /QON wakes it). Returns false
     // when the board has no such charger or the I2C write failed.
     static bool enterShipMode();
+
+    // BQ27220 detail registers for a battery diagnostics screen. Read on demand
+    // (about a dozen short I2C reads), from the task that normally polls the
+    // battery. Returns false (valid = false) on other gauges or failed I/O.
+    struct GaugeDetails {
+        bool valid = false;
+        uint16_t millivolts = 0;
+        uint16_t percentage = 0;
+        int16_t averageCurrentMa = 0;  // positive = charging
+        int16_t temperatureDeciC = 0;  // 0.1 degC
+        uint16_t remainingMah = 0;
+        uint16_t fullChargeMah = 0;    // learned capacity
+        uint16_t designMah = 0;
+        uint16_t cycleCount = 0;
+        uint8_t healthPercent = 0;     // gauge's own SoH estimate
+        uint16_t timeToEmptyMin = 0xFFFF;  // 0xFFFF = not discharging
+        uint16_t timeToFullMin = 0xFFFF;   // 0xFFFF = not charging
+    };
+    static bool readGaugeDetails(GaugeDetails& out);
 
     // One-time charger setup at boot. SGM41562 (Onyx Picco): replays the stock
     // firmware's init (FUN_4200a2d0) — including the 4.35 V charge voltage for the

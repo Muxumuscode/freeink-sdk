@@ -758,10 +758,63 @@ bool BatteryMonitor::readPercentageChecked(uint16_t& out) const {
 bool BatteryMonitor::enterShipMode() {
 #if FREEINK_BATTERY_I2C_GAUGE
   const auto& g = BoardConfig::ACTIVE.batteryGauge;
-  if (g.chargerAddr == 0 || g.chargerType != BoardConfig::ChargerType::Sgm41562) return false;
+  if (g.chargerAddr == 0) return false;
   uint8_t v = 0;
+  if (g.chargerType == BoardConfig::ChargerType::Bq25896) {
+    // BQ25896 REG09: bit 5 BATFET_DIS turns the battery FET off; bit 3
+    // BATFET_DLY would wait tSM_DLY first, so clear it to cut now. /QON (the
+    // T5's PWR key) turns the FET back on. With VBUS present the system stays
+    // powered from the input, so callers should check external power first.
+    constexpr uint8_t BQ25896_REG_BATFET = 0x09;
+    if (!readReg8(g.chargerAddr, BQ25896_REG_BATFET, v)) return false;
+    return writeReg8(g.chargerAddr, BQ25896_REG_BATFET, static_cast<uint8_t>((v | 0x20) & ~0x08));
+  }
+  if (g.chargerType != BoardConfig::ChargerType::Sgm41562) return false;
   if (!readReg8(g.chargerAddr, SGM41562_REG_BATFET, v)) return false;
   return writeReg8(g.chargerAddr, SGM41562_REG_BATFET, v | 0x20);
+#else
+  return false;
+#endif
+}
+
+bool BatteryMonitor::readGaugeDetails(GaugeDetails& out) {
+  out = GaugeDetails{};
+#if FREEINK_BATTERY_I2C_GAUGE
+  const auto& g = BoardConfig::ACTIVE.batteryGauge;
+  if (!gaugeActive() || g.gaugeType != BoardConfig::GaugeType::Bq27220) return false;
+  // BQ27220 standard commands (TI SLUUBD4): all u16 LE, currents signed.
+  constexpr uint8_t kTemperature = 0x06;      // 0.1 K
+  constexpr uint8_t kVoltage = 0x08;          // mV
+  constexpr uint8_t kRemaining = 0x10;        // mAh
+  constexpr uint8_t kFullCharge = 0x12;       // mAh
+  constexpr uint8_t kAverageCurrent = 0x14;   // mA, + charging
+  constexpr uint8_t kTimeToEmpty = 0x16;      // min, 65535 = n/a
+  constexpr uint8_t kTimeToFull = 0x18;       // min, 65535 = n/a
+  constexpr uint8_t kCycleCount = 0x2A;
+  constexpr uint8_t kStateOfCharge = 0x2C;    // %
+  constexpr uint8_t kStateOfHealth = 0x2E;    // % in the low byte
+  constexpr uint8_t kDesignCapacity = 0x3C;   // mAh
+  uint16_t temp = 0, mv = 0, rem = 0, full = 0, cur = 0, tte = 0, ttf = 0, cycles = 0, soc = 0, soh = 0, design = 0;
+  const bool ok = readReg16(g.gaugeAddr, kTemperature, temp) && readReg16(g.gaugeAddr, kVoltage, mv) &&
+                  readReg16(g.gaugeAddr, kRemaining, rem) && readReg16(g.gaugeAddr, kFullCharge, full) &&
+                  readReg16(g.gaugeAddr, kAverageCurrent, cur) && readReg16(g.gaugeAddr, kTimeToEmpty, tte) &&
+                  readReg16(g.gaugeAddr, kTimeToFull, ttf) && readReg16(g.gaugeAddr, kCycleCount, cycles) &&
+                  readReg16(g.gaugeAddr, kStateOfCharge, soc) && readReg16(g.gaugeAddr, kStateOfHealth, soh) &&
+                  readReg16(g.gaugeAddr, kDesignCapacity, design);
+  if (!ok) return false;
+  out.valid = true;
+  out.millivolts = mv;
+  out.percentage = soc;
+  out.averageCurrentMa = static_cast<int16_t>(cur);
+  out.temperatureDeciC = static_cast<int16_t>(static_cast<int>(temp) - 2732);
+  out.remainingMah = rem;
+  out.fullChargeMah = full;
+  out.designMah = design;
+  out.cycleCount = cycles;
+  out.healthPercent = static_cast<uint8_t>(soh & 0xFF);
+  out.timeToEmptyMin = tte;
+  out.timeToFullMin = ttf;
+  return true;
 #else
   return false;
 #endif
