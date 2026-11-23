@@ -219,6 +219,10 @@ void overlayCanvasGray() {
 // used to hardcode epd_fast while display() maps HALF/FULL to epd_text, so any
 // page refreshed with those modes flashed when its AA pass ran.
 lgfx::epd_mode::epd_mode_t g_lastBaseEpdMode = lgfx::epd_mode::epd_fast;
+// Combined grayscale: beginGrayscale() staged a B/W base in the canvas that has
+// NOT reached the panel yet. displayGray() pushes it with the gray overlay; a
+// cancelled pass (cleanupGrayscaleBuffers) or a plain display() must still show it.
+bool g_grayBaseStaged = false;
 
 bool lastPushUsedCleanBank() { return g_lastBaseEpdMode == lgfx::epd_mode::epd_text; }
 
@@ -302,7 +306,8 @@ void LgfxEpdDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   (void)bus;
   (void)prev;
 #if FREEINK_DRIVER_LGFX_EPD
-  fillCanvasBW(fb);  // expand the 1-bpp frame into the gray canvas
+  g_grayBaseStaged = false;  // this frame supersedes any staged gray base
+  fillCanvasBW(fb);          // expand the 1-bpp frame into the gray canvas
   const auto epdMode = epdModeFor(mode);
   if (epdMode == lgfx::epd_mode::epd_text) normalizeForCleanBank();
   g_lastBaseEpdMode = epdMode;
@@ -312,6 +317,26 @@ void LgfxEpdDriver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
   (void)fb;
   (void)mode;
   (void)turnOff;
+#endif
+}
+
+void LgfxEpdDriver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
+                                   bool turnOff) {
+  (void)bus;
+  (void)mode;
+  (void)turnOff;  // displayGray() / cleanupGrayscaleBuffers() get their own turnOff
+#if FREEINK_DRIVER_LGFX_EPD
+  // Stage only: the same canvas fill and waveform choice display() makes, minus
+  // the push. normalizeForCleanBank() reads the PREVIOUS push's mode, so it runs
+  // before the new mode is recorded, exactly as in display().
+  fillCanvasBW(fb);
+  const auto epdMode = epdModeFor(fallback);
+  if (epdMode == lgfx::epd_mode::epd_text) normalizeForCleanBank();
+  g_lastBaseEpdMode = epdMode;
+  g_grayBaseStaged = true;
+#else
+  (void)fb;
+  (void)fallback;
 #endif
 }
 
@@ -355,8 +380,9 @@ void LgfxEpdDriver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, co
   (void)lut;
   (void)factoryMode;
 #if FREEINK_DRIVER_LGFX_EPD
-  (void)fb;             // the canvas from the base push IS the base; see overlayCanvasGray()
+  (void)fb;             // the staged canvas IS the base; see overlayCanvasGray()
   overlayCanvasGray();  // darken only the pixels the planes select
+  g_grayBaseStaged = false;
   // Same mode as the B/W base push, and now actually the same: Panel_EPD's
   // per-pixel diff keys on the epd_mode LUT offset, so switching modes here
   // re-drives every pixel (full-screen flash). This was hardcoded to epd_fast
@@ -375,6 +401,12 @@ void LgfxEpdDriver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
 #if FREEINK_DRIVER_LGFX_EPD
   if (!bw) return;
   fillCanvasBW(bw);
+  // A cancelled combined pass never showed its base: push the B/W page now, or
+  // the panel would keep the previous page while the app believes this one is up.
+  if (g_grayBaseStaged) {
+    g_grayBaseStaged = false;
+    pushCanvas(g_lastBaseEpdMode);
+  }
 #else
   (void)bw;
 #endif

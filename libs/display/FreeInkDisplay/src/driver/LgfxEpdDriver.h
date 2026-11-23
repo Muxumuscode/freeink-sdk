@@ -41,10 +41,14 @@ class LgfxEpdDriver : public PanelDriver {
 
   // 16-gray path: the facade streams LSB/MSB 1-bpp planes (whole or in strips);
   // displayGray combines them with the B/W base into the panel's 8-bit gray canvas.
+  // Combined base: beginGrayscale() only stages the B/W frame in the canvas, and
+  // displayGray() pushes base + gray as ONE refresh. With a separate base every
+  // anti-aliased page took two full Panel_EPD refreshes (a visible double flash).
   GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode != GrayscaleMode::Overlay) return {};
-    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, true, false, false};
+    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Combined, true, false, false};
   }
+  void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void writeGrayscalePlaneStrip(EpdBus& bus, GrayPlane plane, const uint8_t* rows, uint16_t yStart,
